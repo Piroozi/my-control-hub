@@ -16,7 +16,6 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
     steps:
       - name: Checkout repository
@@ -51,31 +50,61 @@ jobs:
           if [ "$cloudflare" != "$previous" ]; then
             changed_at="$(date -u +"%Y-%m-%d %H:%M UTC")"
 
-            python3 - "$overall" "$cloudflare" "$changed_at" <<'PY'
-          import json
-          import sys
-
-          overall, cloudflare, changed_at = sys.argv[1:4]
-
-          with open("status.json", "w") as f:
+            python3 -c '
+          import json,sys
+          overall,cloudflare,changed_at=sys.argv[1:4]
+          with open("status.json","w") as f:
               json.dump({
                   "overall": overall,
                   "cloudflare": cloudflare,
                   "changed_at": changed_at
               }, f, indent=2)
-          PY
-
-            if [ "$cloudflare" = "error" ] && \
-               [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && \
-               [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-
-              curl -sS -X POST \
-                "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-                -H "Content-Type: application/json" \
-                -d "{\"chat_id\":\"${TELEGRAM_CHAT_ID}\",\"text\":\"🔴 My Control Hub: اتصال Read-Only به Cloudflare با خطا مواجه شد.\"}" \
-                >/dev/null || true
-            fi
+          ' "$overall" "$cloudflare" "$changed_at"
           fi
+
+      - name: Find Telegram Chat ID and send test
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
+            echo "TELEGRAM_BOT_TOKEN is not configured."
+            exit 1
+          fi
+
+          updates="$(curl -sS \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates")"
+
+          chat_id="$(printf '%s' "$updates" | python3 -c '
+          import json,sys
+          d=json.load(sys.stdin)
+          found=""
+          for item in reversed(d.get("result", [])):
+              msg=item.get("message") or item.get("edited_message")
+              if not msg:
+                  continue
+              chat=msg.get("chat", {})
+              if chat.get("type") == "private":
+                  found=str(chat.get("id"))
+                  break
+          print(found)
+          ')"
+
+          if [ -z "$chat_id" ]; then
+            echo "No private Telegram chat found."
+            echo "Send hello to the bot and run the workflow again."
+            exit 1
+          fi
+
+          echo "::notice title=Telegram Chat ID::$chat_id"
+          echo "Telegram Chat ID: $chat_id"
+
+          curl -sS -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${chat_id}" \
+            --data-urlencode "text=🟢 My Control Hub: Telegram Alert فعال شد و ارتباط با موفقیت برقرار است." \
+            >/dev/null
 
       - name: Update dashboard if state changed
         shell: bash
