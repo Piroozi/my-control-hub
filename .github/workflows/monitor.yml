@@ -16,163 +16,84 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: "250671931"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check Cloudflare
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          previous="$(python3 -c 'import json; print(json.load(open("status.json")).get("cloudflare","unknown"))' 2>/dev/null || echo unknown)"
-
-          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
-            cloudflare="unconfigured"
-            overall="warning"
-          else
-            code="$(curl -sS -o /tmp/cloudflare.json -w "%{http_code}" \
-              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-              "https://api.cloudflare.com/client/v4/user/tokens/verify" || true)"
-
-            success="$(python3 -c 'import json; d=json.load(open("/tmp/cloudflare.json")); print("true" if d.get("success") is True else "false")' 2>/dev/null || echo false)"
-
-            if [ "$code" = "200" ] && [ "$success" = "true" ]; then
-              cloudflare="ok"
-              overall="ok"
-            else
-              cloudflare="error"
-              overall="critical"
-            fi
-          fi
-
-          if [ "$cloudflare" != "$previous" ]; then
-            changed_at="$(date -u +"%Y-%m-%d %H:%M UTC")"
-
-            python3 -c '
-          import json,sys
-          overall,cloudflare,changed_at=sys.argv[1:4]
-
-          with open("status.json","w") as f:
-              json.dump({
-                  "overall": overall,
-                  "cloudflare": cloudflare,
-                  "changed_at": changed_at
-              }, f, indent=2)
-          ' "$overall" "$cloudflare" "$changed_at"
-          fi
-
-      - name: Find Telegram Chat ID and send test
-        if: github.event_name == 'workflow_dispatch'
+      - name: Monitor Cloudflare and notify Telegram
         shell: bash
         run: |
           set -u
 
-          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
-            echo "ERROR: TELEGRAM_BOT_TOKEN is empty."
-            exit 1
+          previous="$(python3 -c 'import json; try: print(json.load(open("status.json")).get("cloudflare","unknown")) except Exception: print("unknown")' 2>/dev/null || echo unknown)"
+
+          cloudflare="error"
+          overall="critical"
+          http_code="000"
+
+          if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            http_code="$(curl -sS -o /tmp/cf.json -w "%{http_code}"               -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"               -H "Content-Type: application/json"               "https://api.cloudflare.com/client/v4/user/tokens/verify" || true)"
+
+            cf_ok="$(python3 -c 'import json; d=json.load(open("/tmp/cf.json")); print("yes" if d.get("success") is True else "no")' 2>/dev/null || echo no)"
+
+            if [ "$http_code" = "200" ] && [ "$cf_ok" = "yes" ]; then
+              cloudflare="ok"
+              overall="ok"
+            fi
           fi
 
-          echo "Checking Telegram bot token..."
+          changed_at="$(date -u +"%Y-%m-%d %H:%M UTC")"
 
-          getme="$(curl -sS \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe")"
+          python3 -c 'import json,sys; overall,cf,ts=sys.argv[1:4]; json.dump({"overall":overall,"cloudflare":cf,"changed_at":ts},open("status.json","w"),indent=2)'             "$overall" "$cloudflare" "$changed_at"
 
-          bot_ok="$(printf '%s' "$getme" | python3 -c '
-          import json,sys
+          send_telegram () {
+            local text="$1"
 
-          try:
-              d=json.load(sys.stdin)
-              print("yes" if d.get("ok") else "no")
-          except:
-              print("invalid")
-          ')"
+            if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
+              echo "Telegram token is empty."
+              return 1
+            fi
 
-          echo "Telegram token check: $bot_ok"
+            response="$(curl -sS -X POST               "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"               --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}"               --data-urlencode "text=${text}" || true)"
 
-          if [ "$bot_ok" != "yes" ]; then
-            echo "ERROR: Telegram token is invalid or Telegram API rejected it."
-            echo "$getme"
-            exit 1
+            tg_ok="$(printf '%s' "$response" | python3 -c 'import json,sys; try: d=json.load(sys.stdin); print("yes" if d.get("ok") is True else "no") except Exception: print("no")')"
+
+            echo "Telegram send result: $tg_ok"
+
+            if [ "$tg_ok" != "yes" ]; then
+              echo "Telegram response:"
+              echo "$response"
+              return 1
+            fi
+
+            return 0
+          }
+
+          if [ "${GITHUB_EVENT_NAME:-}" = "workflow_dispatch" ]; then
+            send_telegram "🟢 My Control Hub: Telegram connection test successful." || exit 1
           fi
 
-          echo "Token is valid. Reading messages..."
-
-          updates="$(curl -sS \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates")"
-
-          count="$(printf '%s' "$updates" | python3 -c '
-          import json,sys
-
-          try:
-              d=json.load(sys.stdin)
-              print(len(d.get("result", [])))
-          except:
-              print(-1)
-          ')"
-
-          echo "Telegram update count: $count"
-
-          chat_id="$(printf '%s' "$updates" | python3 -c '
-          import json,sys
-
-          d=json.load(sys.stdin)
-          found=""
-
-          for item in reversed(d.get("result", [])):
-              msg=item.get("message") or item.get("edited_message")
-
-              if not msg:
-                  continue
-
-              chat=msg.get("chat", {})
-
-              if chat.get("type") == "private":
-                  found=str(chat.get("id"))
-                  break
-
-          print(found)
-          ')"
-
-          if [ -z "$chat_id" ]; then
-            echo "ERROR: No private chat found."
-            echo "Open the bot in Telegram, press Start, send hello, then run this workflow again."
-            exit 1
+          if [ "$cloudflare" != "$previous" ]; then
+            if [ "$cloudflare" = "error" ]; then
+              send_telegram "🔴 My Control Hub: Cloudflare connection/API problem detected." || true
+            elif [ "$cloudflare" = "ok" ] && [ "$previous" = "error" ]; then
+              send_telegram "🟢 My Control Hub: Cloudflare connection recovered." || true
+            fi
           fi
 
-          echo "Telegram Chat ID found: $chat_id"
+          echo "Previous Cloudflare state: $previous"
+          echo "Current Cloudflare state:  $cloudflare"
+          echo "Cloudflare HTTP code:      $http_code"
 
-          response="$(curl -sS -X POST \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            --data-urlencode "chat_id=${chat_id}" \
-            --data-urlencode "text=🟢 My Control Hub: Telegram Alert فعال شد و ارتباط با موفقیت برقرار است.")"
-
-          send_ok="$(printf '%s' "$response" | python3 -c '
-          import json,sys
-
-          try:
-              d=json.load(sys.stdin)
-              print("yes" if d.get("ok") else "no")
-          except:
-              print("invalid")
-          ')"
-
-          echo "Telegram send test: $send_ok"
-
-          if [ "$send_ok" != "yes" ]; then
-            echo "ERROR: Test message could not be sent."
-            echo "$response"
-            exit 1
-          fi
-
-          echo "SUCCESS: Telegram is fully connected."
-
-      - name: Update dashboard if state changed
+      - name: Commit dashboard status
         shell: bash
         run: |
+          set -e
+
           if git diff --quiet -- status.json; then
-            echo "No state change."
+            echo "No dashboard change."
             exit 0
           fi
 
@@ -182,3 +103,15 @@ jobs:
           git add status.json
           git commit -m "chore: update monitoring state"
           git push
+
+      - name: Fail workflow if Cloudflare is unhealthy
+        shell: bash
+        run: |
+          state="$(python3 -c 'import json; print(json.load(open("status.json")).get("cloudflare","unknown"))')"
+
+          if [ "$state" != "ok" ]; then
+            echo "Cloudflare monitoring is unhealthy: $state"
+            exit 1
+          fi
+
+          echo "Cloudflare monitoring is healthy."
