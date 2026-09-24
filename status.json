@@ -1,5 +1,5 @@
 {
-  "overall": "warning",
-  "cloudflare": "unconfigured",
-  "changed_at": "Not initialized"
+  "overall": "ok",
+  "cloudflare": "ok",
+  "changed_at": "2026-09-24 13:36 UTC"
 }
