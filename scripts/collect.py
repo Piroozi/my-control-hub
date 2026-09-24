@@ -28,18 +28,17 @@ def list_zones():
             raise RuntimeError(obj.get("errors"))
         out += obj.get("result",[])
         total=obj.get("result_info",{}).get("total_pages",1)
-        if page>=total:
-            break
+        if page>=total: break
         page+=1
     return out
 
 def health_url(url):
     try:
         t=time.perf_counter()
-        req=urllib.request.Request(url,headers={"User-Agent":"MyControlHub/2.2"})
+        req=urllib.request.Request(url,headers={"User-Agent":"MyControlHub/2.3"})
         with urllib.request.urlopen(req,timeout=15,context=ssl.create_default_context()) as r:
             ms=round((time.perf_counter()-t)*1000)
-            return r.getcode(), ms, r.geturl()
+            return r.getcode(),ms,r.geturl()
     except urllib.error.HTTPError as e:
         ms=round((time.perf_counter()-t)*1000)
         return e.code,ms,url
@@ -55,9 +54,9 @@ def health_domain(domain):
         last=(code,ms,final)
     return last or (0,None,f"https://{domain}")
 
-def gql(zone_id, start, end, error_only=False):
+def gql(zone_id,start,end,error_only=False):
     extra=", edgeResponseStatus_geq: 500, edgeResponseStatus_lt: 600" if error_only else ""
-    query = (
+    query=(
         'query Req($zoneTag: string, $start: Time, $end: Time) {'
         ' viewer { zones(filter: {zoneTag: $zoneTag}) {'
         ' series: httpRequestsAdaptiveGroups('
@@ -86,7 +85,12 @@ def collect_series(zone_id):
     for x in total:
         ts=x.get("dimensions",{}).get("datetimeHour")
         if ts:
-            by[ts]={"ts":ts,"requests":int(x.get("count") or 0),"errors":0,"bytes":int((x.get("sum") or {}).get("edgeResponseBytes") or 0)}
+            by[ts]={
+                "ts":ts,
+                "requests":int(x.get("count") or 0),
+                "errors":0,
+                "bytes":int((x.get("sum") or {}).get("edgeResponseBytes") or 0)
+            }
     for x in errs:
         ts=x.get("dimensions",{}).get("datetimeHour")
         if ts:
@@ -94,7 +98,7 @@ def collect_series(zone_id):
             by[ts]["errors"]=int(x.get("count") or 0)
     return [by[k] for k in sorted(by)]
 
-def summarize(domain, url, code, ms, final_url, series, now, analytics_available=True):
+def summarize(domain,url,code,ms,final_url,series,now,analytics_available=True):
     cutoff=now-datetime.timedelta(hours=24)
     last24=[]
     for p in series:
@@ -129,6 +133,7 @@ def summarize(domain, url, code, ms, final_url, series, now, analytics_available
 def main():
     now=datetime.datetime.now(datetime.timezone.utc)
     systems=[]; incidents=[]; seen=set()
+
     try:
         zones=[z for z in list_zones() if z.get("name") not in IGNORE and z.get("status")=="active"]
     except Exception:
@@ -136,31 +141,55 @@ def main():
         incidents.append({"system":"Cloudflare","message":"فهرست Zoneها قابل دریافت نبود","time":now.isoformat()})
 
     for z in zones:
-        domain=z["name"]
-        seen.add(domain)
+        domain=z["name"]; seen.add(domain)
         code,ms,final=health_domain(domain)
         try:
             series=collect_series(z["id"])
             analytics_available=True
         except Exception:
-            series=[]
-            analytics_available=False
+            series=[]; analytics_available=False
             incidents.append({"system":domain,"message":"Cloudflare Analytics قابل دریافت نبود","time":now.isoformat()})
         item=summarize(domain,f"https://{domain}",code,ms,final,series,now,analytics_available)
         if item["status"]!="ok":
-            incidents.append({"system":domain,"message":f"وضعیت {item['status']} — HTTP {code or 'DOWN'}، خطای 5xx: {item['errorRate24h']:.2f}%","time":now.isoformat()})
+            incidents.append({
+                "system":domain,
+                "message":f"وضعیت {item['status']} — HTTP {code or 'DOWN'}، خطای 5xx: {item['errorRate24h']:.2f}%",
+                "time":now.isoformat()
+            })
         systems.append(item)
 
-    # Fallback health checks for systems that are not zones in this Cloudflare account.
     for m in MANUAL:
         domain=m.get("domain","").strip()
         if not domain or domain in seen:
             continue
         url=m.get("url") or f"https://{domain}"
+        mode=m.get("monitoringMode","active")
+
+        if mode=="setup":
+            systems.append({
+                "name":domain,
+                "domain":domain,
+                "url":url,
+                "status":"setup",
+                "httpStatus":None,
+                "responseMs":None,
+                "finalUrl":url,
+                "requests24h":0,
+                "errors24h":0,
+                "errorRate24h":0,
+                "series":[],
+                "analyticsAvailable":False
+            })
+            continue
+
         code,ms,final=health_url(url)
         item=summarize(domain,url,code,ms,final,[],now,False)
         if item["status"]!="ok":
-            incidents.append({"system":domain,"message":f"Health Check ناموفق — HTTP {code or 'DOWN'}","time":now.isoformat()})
+            incidents.append({
+                "system":domain,
+                "message":f"Health Check ناموفق — HTTP {code or 'DOWN'}",
+                "time":now.isoformat()
+            })
         systems.append(item)
 
     out={"generatedAt":now.isoformat(),"systems":systems,"incidents":incidents}
