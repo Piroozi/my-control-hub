@@ -1,10 +1,18 @@
 {
-  "aliases": {
-    "digitoma.ir": "دیجیتوما",
-    "karbiya.ir": "کاربیا",
-    "mycontrolhub.ir": "My Control Hub"
-  },
+  "aliases": {},
   "ignoreZones": [],
+  "manualSystems": [
+    {
+      "name": "mycontrolhub.ir",
+      "domain": "mycontrolhub.ir",
+      "url": "https://mycontrolhub.ir"
+    },
+    {
+      "name": "karbiya.ir",
+      "domain": "karbiya.ir",
+      "url": "https://karbiya.ir"
+    }
+  ],
   "thresholds": {
     "responseMsWarning": 2000,
     "errorRateWarning": 2.0,
