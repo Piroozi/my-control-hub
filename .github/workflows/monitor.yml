@@ -53,6 +53,7 @@ jobs:
             python3 -c '
           import json,sys
           overall,cloudflare,changed_at=sys.argv[1:4]
+
           with open("status.json","w") as f:
               json.dump({
                   "overall": overall,
@@ -66,45 +67,106 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
-          set -euo pipefail
+          set -u
 
           if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
-            echo "TELEGRAM_BOT_TOKEN is not configured."
+            echo "ERROR: TELEGRAM_BOT_TOKEN is empty."
             exit 1
           fi
+
+          echo "Checking Telegram bot token..."
+
+          getme="$(curl -sS \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe")"
+
+          bot_ok="$(printf '%s' "$getme" | python3 -c '
+          import json,sys
+
+          try:
+              d=json.load(sys.stdin)
+              print("yes" if d.get("ok") else "no")
+          except:
+              print("invalid")
+          ')"
+
+          echo "Telegram token check: $bot_ok"
+
+          if [ "$bot_ok" != "yes" ]; then
+            echo "ERROR: Telegram token is invalid or Telegram API rejected it."
+            echo "$getme"
+            exit 1
+          fi
+
+          echo "Token is valid. Reading messages..."
 
           updates="$(curl -sS \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates")"
 
+          count="$(printf '%s' "$updates" | python3 -c '
+          import json,sys
+
+          try:
+              d=json.load(sys.stdin)
+              print(len(d.get("result", [])))
+          except:
+              print(-1)
+          ')"
+
+          echo "Telegram update count: $count"
+
           chat_id="$(printf '%s' "$updates" | python3 -c '
           import json,sys
+
           d=json.load(sys.stdin)
           found=""
+
           for item in reversed(d.get("result", [])):
               msg=item.get("message") or item.get("edited_message")
+
               if not msg:
                   continue
+
               chat=msg.get("chat", {})
+
               if chat.get("type") == "private":
                   found=str(chat.get("id"))
                   break
+
           print(found)
           ')"
 
           if [ -z "$chat_id" ]; then
-            echo "No private Telegram chat found."
-            echo "Send hello to the bot and run the workflow again."
+            echo "ERROR: No private chat found."
+            echo "Open the bot in Telegram, press Start, send hello, then run this workflow again."
             exit 1
           fi
 
-          echo "::notice title=Telegram Chat ID::$chat_id"
-          echo "Telegram Chat ID: $chat_id"
+          echo "Telegram Chat ID found: $chat_id"
 
-          curl -sS -X POST \
+          response="$(curl -sS -X POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             --data-urlencode "chat_id=${chat_id}" \
-            --data-urlencode "text=🟢 My Control Hub: Telegram Alert فعال شد و ارتباط با موفقیت برقرار است." \
-            >/dev/null
+            --data-urlencode "text=🟢 My Control Hub: Telegram Alert فعال شد و ارتباط با موفقیت برقرار است.")"
+
+          send_ok="$(printf '%s' "$response" | python3 -c '
+          import json,sys
+
+          try:
+              d=json.load(sys.stdin)
+              print("yes" if d.get("ok") else "no")
+          except:
+              print("invalid")
+          ')"
+
+          echo "Telegram send test: $send_ok"
+
+          if [ "$send_ok" != "yes" ]; then
+            echo "ERROR: Test message could not be sent."
+            echo "$response"
+            exit 1
+          fi
+
+          echo "SUCCESS: Telegram is fully connected."
 
       - name: Update dashboard if state changed
         shell: bash
