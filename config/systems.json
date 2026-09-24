@@ -1,0 +1,13 @@
+{
+  "aliases": {
+    "digitoma.ir": "دیجیتوما",
+    "karbiya.ir": "کاربیا",
+    "mycontrolhub.ir": "My Control Hub"
+  },
+  "ignoreZones": [],
+  "thresholds": {
+    "responseMsWarning": 2000,
+    "errorRateWarning": 2.0,
+    "errorRateCritical": 5.0
+  }
+}

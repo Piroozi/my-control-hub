@@ -1,1 +1,75 @@
-<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>My Control Hub</title><style>body{font-family:Arial,sans-serif;background:#f6f8fb;color:#172033;margin:0}header{background:#0f172a;color:#fff;padding:24px}main{max-width:900px;margin:28px auto;padding:0 18px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}.card{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:18px}.label{font-size:13px;color:#64748b}.value{font-size:21px;font-weight:700;margin-top:8px}.ok{color:#15803d}.warn{color:#b45309}.bad{color:#b91c1c}.muted{color:#64748b}</style></head><body><header><h1>My Control Hub</h1><div>مرکز مستقل پایش زیرساخت‌ها</div></header><main><div class="grid"><div class="card"><div class="label">وضعیت مانیتورینگ</div><div id="overall" class="value muted">در انتظار اولین بررسی…</div></div><div class="card"><div class="label">Cloudflare</div><div id="cf" class="value muted">نامشخص</div></div><div class="card"><div class="label">آخرین تغییر وضعیت</div><div id="updated" class="value">—</div></div><div class="card"><div class="label">نسخه</div><div class="value">V1 Foundation</div></div></div></main><script>(async()=>{try{const r=await fetch('./status.json?ts='+Date.now(),{cache:'no-store'});if(!r.ok)return;const s=await r.json();let o=document.getElementById('overall'),c=document.getElementById('cf');o.textContent=s.overall==='ok'?'سالم':s.overall==='warning'?'هشدار':'بحرانی';o.className='value '+(s.overall==='ok'?'ok':s.overall==='warning'?'warn':'bad');c.textContent=s.cloudflare==='ok'?'متصل و سالم':s.cloudflare==='unconfigured'?'تنظیم نشده':'خطا';c.className='value '+(s.cloudflare==='ok'?'ok':s.cloudflare==='unconfigured'?'warn':'bad');document.getElementById('updated').textContent=s.changed_at||'—'}catch(e){}})();</script></body></html>
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>My Control Hub</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand"><div class="logo">◆</div><div><b>My Control Hub</b><small>مرکز کنترل زیرساخت</small></div></div>
+    <nav>
+      <button class="nav active" data-view="overview">⌂ <span>نمای کلی</span></button>
+      <button class="nav" data-view="systems">◫ <span>سامانه‌ها</span></button>
+      <button class="nav" data-view="incidents">⚠ <span>رخدادها</span></button>
+      <button class="nav" data-view="repair">✚ <span>رفع اشکال</span></button>
+    </nav>
+    <div class="side-foot">V2 Operations MVP</div>
+  </aside>
+
+  <main>
+    <header>
+      <div>
+        <h1 id="pageTitle">مانیتورینگ سامانه‌ها</h1>
+        <p id="pageSub">وضعیت همه سامانه‌ها در یک نگاه</p>
+      </div>
+      <div class="range">
+        <button data-range="24h" class="active">۲۴ ساعت</button>
+        <button data-range="7d">۷ روز</button>
+        <button data-range="30d">۳۰ روز</button>
+      </div>
+    </header>
+
+    <section id="summary" class="summary"></section>
+    <section id="systemsGrid" class="systems-grid"></section>
+
+    <section id="detail" class="detail hidden">
+      <div class="detail-head">
+        <div>
+          <h2 id="detailName"></h2>
+          <span id="detailDomain"></span>
+        </div>
+        <div class="actions">
+          <button id="downloadDiag">دانلود گزارش تشخیصی</button>
+          <button id="closeDetail" class="ghost">بستن</button>
+        </div>
+      </div>
+      <div class="detail-kpis" id="detailKpis"></div>
+      <div class="charts">
+        <article class="chart-card"><h3>درخواست‌ها</h3><canvas id="requestsChart"></canvas></article>
+        <article class="chart-card"><h3>خطاهای 5xx</h3><canvas id="errorsChart"></canvas></article>
+        <article class="chart-card"><h3>زمان پاسخ Health Check</h3><div id="latencyBox" class="big-number"></div></article>
+      </div>
+    </section>
+
+    <section id="incidentsPanel" class="panel hidden">
+      <div class="panel-head"><h2>رخدادهای فعال</h2></div>
+      <div id="incidentList"></div>
+    </section>
+
+    <section id="repairPanel" class="panel hidden">
+      <div class="panel-head"><h2>مرکز رفع اشکال</h2><p>فعلاً فقط اقدامات تشخیصی و کم‌ریسک فعال‌اند.</p></div>
+      <div class="runbook-grid">
+        <a href="runbooks/check-health.sh" download>بررسی Health / HTTP<small>بدون تغییر در سامانه</small></a>
+        <a href="runbooks/check-dns.sh" download>بررسی DNS<small>بدون تغییر در DNS</small></a>
+        <a href="runbooks/check-cloudflare-token.sh" download>بررسی اتصال Cloudflare<small>Read-only</small></a>
+      </div>
+      <div class="notice"><b>اصل ایمنی:</b> مانیتورینگ همیشه Read‑Only می‌ماند. عملیات تغییردهنده بعداً با Token جدا و تأیید صریح Owner اضافه می‌شود.</div>
+    </section>
+
+    <footer>آخرین بروزرسانی: <span id="updatedAt">—</span></footer>
+  </main>
+  <script src="assets/app.js"></script>
+</body>
+</html>
