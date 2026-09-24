@@ -5,12 +5,14 @@
     {
       "name": "mycontrolhub.ir",
       "domain": "mycontrolhub.ir",
-      "url": "https://mycontrolhub.ir"
+      "url": "https://mycontrolhub.ir",
+      "monitoringMode": "active"
     },
     {
       "name": "karbiya.ir",
       "domain": "karbiya.ir",
-      "url": "https://karbiya.ir"
+      "url": "https://karbiya.ir",
+      "monitoringMode": "setup"
     }
   ],
   "thresholds": {
