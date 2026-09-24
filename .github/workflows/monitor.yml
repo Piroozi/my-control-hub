@@ -1,0 +1,93 @@
+name: My Control Hub Monitor
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "7,37 * * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check Cloudflare
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          previous="$(python3 -c 'import json; print(json.load(open("status.json")).get("cloudflare","unknown"))' 2>/dev/null || echo unknown)"
+
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            cloudflare="unconfigured"
+            overall="warning"
+          else
+            code="$(curl -sS -o /tmp/cloudflare.json -w "%{http_code}" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              "https://api.cloudflare.com/client/v4/user/tokens/verify" || true)"
+
+            success="$(python3 -c 'import json; d=json.load(open("/tmp/cloudflare.json")); print("true" if d.get("success") is True else "false")' 2>/dev/null || echo false)"
+
+            if [ "$code" = "200" ] && [ "$success" = "true" ]; then
+              cloudflare="ok"
+              overall="ok"
+            else
+              cloudflare="error"
+              overall="critical"
+            fi
+          fi
+
+          if [ "$cloudflare" != "$previous" ]; then
+            changed_at="$(date -u +"%Y-%m-%d %H:%M UTC")"
+
+            python3 - "$overall" "$cloudflare" "$changed_at" <<'PY'
+          import json
+          import sys
+
+          overall, cloudflare, changed_at = sys.argv[1:4]
+
+          with open("status.json", "w") as f:
+              json.dump({
+                  "overall": overall,
+                  "cloudflare": cloudflare,
+                  "changed_at": changed_at
+              }, f, indent=2)
+          PY
+
+            if [ "$cloudflare" = "error" ] && \
+               [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && \
+               [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+
+              curl -sS -X POST \
+                "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                -H "Content-Type: application/json" \
+                -d "{\"chat_id\":\"${TELEGRAM_CHAT_ID}\",\"text\":\"🔴 My Control Hub: اتصال Read-Only به Cloudflare با خطا مواجه شد.\"}" \
+                >/dev/null || true
+            fi
+          fi
+
+      - name: Update dashboard if state changed
+        shell: bash
+        run: |
+          if git diff --quiet -- status.json; then
+            echo "No state change."
+            exit 0
+          fi
+
+          git config user.name "my-control-hub-bot"
+          git config user.email "actions@users.noreply.github.com"
+
+          git add status.json
+          git commit -m "chore: update monitoring state"
+          git push
