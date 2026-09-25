@@ -1,0 +1,147 @@
+name: Cloudflare Resource Discovery
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_OBSERVABILITY_TOKEN: ${{ secrets.CLOUDFLARE_OBSERVABILITY_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      - name: Discover Cloudflare resources
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request, urllib.error, urllib.parse
+
+          old_token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
+          obs_token = os.environ.get("CLOUDFLARE_OBSERVABILITY_TOKEN", "").strip()
+          tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+          tg_chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+
+          def cf_get(url, token):
+              req = urllib.request.Request(
+                  url,
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Content-Type": "application/json",
+                      "User-Agent": "MyControlHub-Discovery/1.0",
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      body = r.read().decode()
+                      return r.getcode(), json.loads(body)
+              except urllib.error.HTTPError as e:
+                  try:
+                      body = e.read().decode()
+                      data = json.loads(body)
+                  except Exception:
+                      data = {"error": str(e)}
+                  return e.code, data
+              except Exception as e:
+                  return 0, {"error": str(e)}
+
+          def result_count(data):
+              if not isinstance(data, dict):
+                  return None
+              result = data.get("result")
+              if isinstance(result, list):
+                  return len(result)
+              if isinstance(result, dict) and isinstance(result.get("buckets"), list):
+                  return len(result["buckets"])
+              return None
+
+          if not old_token:
+              raise SystemExit("CLOUDFLARE_API_TOKEN is missing")
+          if not obs_token:
+              raise SystemExit("CLOUDFLARE_OBSERVABILITY_TOKEN is missing")
+
+          account_id = None
+
+          code, data = cf_get(
+              "https://api.cloudflare.com/client/v4/accounts?per_page=50",
+              old_token,
+          )
+          if code == 200 and isinstance(data.get("result"), list) and data["result"]:
+              account_id = data["result"][0].get("id")
+
+          if not account_id:
+              code, data = cf_get(
+                  "https://api.cloudflare.com/client/v4/zones?per_page=50",
+                  old_token,
+              )
+              zones = data.get("result") if isinstance(data, dict) else None
+              if code == 200 and isinstance(zones, list) and zones:
+                  account = zones[0].get("account") or {}
+                  account_id = account.get("id")
+
+          if not account_id:
+              raise SystemExit("Could not determine Cloudflare account ID")
+
+          checks = [
+              ("Workers", f"https://api.cloudflare.com/client/v4/accounts/{account_id}/workers/scripts"),
+              ("D1", f"https://api.cloudflare.com/client/v4/accounts/{account_id}/d1/database"),
+              ("KV", f"https://api.cloudflare.com/client/v4/accounts/{account_id}/storage/kv/namespaces"),
+              ("R2", f"https://api.cloudflare.com/client/v4/accounts/{account_id}/r2/buckets"),
+          ]
+
+          rows = []
+          for label, url in checks:
+              code, data = cf_get(url, obs_token)
+              count = result_count(data)
+              if code == 200:
+                  rows.append((label, "OK", code, count))
+              elif code in (401, 403):
+                  rows.append((label, "NO_ACCESS", code, None))
+              else:
+                  rows.append((label, "ERROR", code, None))
+
+          print("Cloudflare Resource Discovery")
+          print("-" * 32)
+          for label, state, code, count in rows:
+              if state == "OK":
+                  print(f"{label}: OK | HTTP {code} | count={count if count is not None else 'unknown'}")
+              else:
+                  print(f"{label}: {state} | HTTP {code}")
+
+          if tg_token and tg_chat:
+              lines = ["🔎 My Control Hub — Cloudflare Resource Discovery"]
+              for label, state, code, count in rows:
+                  if state == "OK":
+                      lines.append(f"✅ {label}: access OK — resources: {count if count is not None else 'unknown'}")
+                  elif state == "NO_ACCESS":
+                      lines.append(f"⛔️ {label}: permission missing — HTTP {code}")
+                  else:
+                      lines.append(f"⚠️ {label}: check failed — HTTP {code}")
+
+              text = "\n".join(lines)
+              payload = urllib.parse.urlencode({
+                  "chat_id": tg_chat,
+                  "text": text,
+              }).encode()
+
+              req = urllib.request.Request(
+                  f"https://api.telegram.org/bot{tg_token}/sendMessage",
+                  data=payload,
+                  method="POST",
+              )
+              try:
+                  urllib.request.urlopen(req, timeout=30).read()
+              except Exception as e:
+                  print("Telegram notification failed:", e)
+
+          workers = next(x for x in rows if x[0] == "Workers")
+          if workers[1] != "OK":
+              raise SystemExit("Workers metadata access is not working")
+          PY
